@@ -22,21 +22,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Ensure the installed MediaPipe exposes the expected `solutions` API.
-# On newer Python versions some mediapipe wheels may be incompatible; fail
-# early with a clear message so the developer can install a compatible
-# mediapipe release or use a supported Python interpreter (e.g. 3.10/3.11).
+# Detect whether the installed MediaPipe exposes the expected `solutions` API.
 try:
     _mp_has_solutions = hasattr(mp, "solutions")
 except Exception:
     _mp_has_solutions = False
 
-if not _mp_has_solutions:
-    raise RuntimeError(
-        "The installed 'mediapipe' package does not expose 'solutions'. "
-        "Install a compatible mediapipe (for example: mediapipe==0.8.10) "
-        "and use Python 3.10/3.11. See README.md for instructions."
-    )
+# If MediaPipe doesn't expose `solutions` (newer packaging changed layout),
+# continue running but disable ML/camera processing so the web UI can start.
+USE_MEDIAPIPE = _mp_has_solutions
+if not USE_MEDIAPIPE:
+    print("⚠️  mediapipe 'solutions' not found — running without ML features.")
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 otp_storage = {}
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -202,16 +198,24 @@ face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_fronta
 smile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_smile.xml')
 eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
 
-mp_hands = mp.solutions.hands
-mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(
-    max_num_faces=1,
-    refine_landmarks=True,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
-)
-hands = mp_hands.Hands(min_detection_confidence=0.7)
-mp_draw = mp.solutions.drawing_utils
+# MediaPipe objects (guarded when not available)
+if USE_MEDIAPIPE:
+    mp_hands = mp.solutions.hands
+    mp_face_mesh = mp.solutions.face_mesh
+    face_mesh = mp_face_mesh.FaceMesh(
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5
+    )
+    hands = mp_hands.Hands(min_detection_confidence=0.7)
+    mp_draw = mp.solutions.drawing_utils
+else:
+    mp_hands = None
+    mp_face_mesh = None
+    face_mesh = None
+    hands = None
+    mp_draw = None
 
 # Global state
 face_detected = False
@@ -285,10 +289,12 @@ def generate_frames():
         # Convert to RGB for MediaPipe
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         
-        # 1. Process Face Mesh for Expression
-        face_results = face_mesh.process(rgb_frame)
-        
-        if face_results.multi_face_landmarks:
+        # 1. Process Face Mesh for Expression (only if mediapipe is available)
+        face_results = None
+        if USE_MEDIAPIPE and face_mesh:
+            face_results = face_mesh.process(rgb_frame)
+
+        if face_results and getattr(face_results, 'multi_face_landmarks', None):
             face_detected = True
             landmarks = face_results.multi_face_landmarks[0].landmark
             
@@ -331,12 +337,14 @@ def generate_frames():
             if updated:
                 attendance_status = new_status
 
-        # 3. Hand Gesture Detection (Using your existing mediapipe hands logic)
-        hand_results = hands.process(rgb_frame)
-        if hand_results.multi_hand_landmarks:
-            for hand_landmarks, handedness in zip(hand_results.multi_hand_landmarks, hand_results.multi_handedness):
-                gesture = detect_gesture(hand_landmarks, handedness.classification[0].label)
-                mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+        # 3. Hand Gesture Detection (only if mediapipe is available)
+        if USE_MEDIAPIPE and hands:
+            hand_results = hands.process(rgb_frame)
+            if hand_results and getattr(hand_results, 'multi_hand_landmarks', None):
+                for hand_landmarks, handedness in zip(hand_results.multi_hand_landmarks, hand_results.multi_handedness):
+                    gesture = detect_gesture(hand_landmarks, handedness.classification[0].label)
+                    if mp_draw and mp_hands:
+                        mp_draw.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
         # 4. Apply Filters & UI Overlay
         # ... (keep your existing filter and putText logic here) ...
