@@ -1,8 +1,11 @@
 flask
-opencv-python
 mediapipe==0.10.35
 SpeechRecognition
 flask-socketio
 groq
 python-dotenv
 numpy
+eventlet
+gunicorn
+mediapipe
+opencv-python-headless
